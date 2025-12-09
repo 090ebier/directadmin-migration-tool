@@ -83,11 +83,13 @@ prompt() {
 }
 
 prompt_secret() {
-  local q="$1"
-  read -r -s -p "$(echo -e "${BLU}${BLD}?${RST} ${q}: ")" REPLY
-  echo
+  local q="$1" REPLY=""
+  # Always read from the real terminal to avoid stdin pollution (curl/progress/pipe)
+  read -r -s -p "$(echo -e "${BLU}${BLD}?${RST} ${q}: ")" REPLY </dev/tty
+  echo >/dev/tty
   echo "$REPLY"
 }
+
 
 _spinner_pid=""
 spinner_start() {
