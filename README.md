@@ -141,5 +141,3 @@ Check DirectAdmin logs on the destination server (common locations):
 * SSH host key storage is disabled for clean output (no `known_hosts` writes).
 * For long-term production usage, consider switching to SSH keys.
 
-```
-```
