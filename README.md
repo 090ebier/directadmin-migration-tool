@@ -1,4 +1,4 @@
-
+````md
 # DirectAdmin Migration Tool
 
 A production-ready Bash wizard to **migrate DirectAdmin accounts** from a source server to a destination server using this workflow:
@@ -26,7 +26,7 @@ Run directly on the **source** server:
 
 ```bash
 bash <(curl -kL --progress-bar https://raw.githubusercontent.com/090ebier/directadmin-migration-tool/refs/heads/main/da-backup-restore-migrate.sh)
-
+````
 
 ### Notes
 
@@ -134,6 +134,7 @@ Check DirectAdmin logs on the destination server (common locations):
 * `/usr/local/directadmin/data/admin/backup_restore.log`
 * `/usr/local/directadmin/data/admin/backup.log`
 
+---
 
 ## Security Notes
 
@@ -141,4 +142,5 @@ Check DirectAdmin logs on the destination server (common locations):
 * SSH host key storage is disabled for clean output (no `known_hosts` writes).
 * For long-term production usage, consider switching to SSH keys.
 
-
+```
+```
