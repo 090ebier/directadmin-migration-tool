@@ -1,4 +1,3 @@
-````md
 # DirectAdmin Migration Tool
 
 A production-ready Bash wizard to **migrate DirectAdmin accounts** from a source server to a destination server using this workflow:
