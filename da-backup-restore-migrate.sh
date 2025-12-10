@@ -543,7 +543,8 @@ while true; do
 done
 
 [ "${#SELECTED_USERS[@]}" -gt 0 ] || die "No users selected."
-ok "Selected ${#SELECTED_USERS[@]}" user(s): ${SELECTED_USERS[*]}"
+#ok "Selected ${#SELECTED_USERS[@]}" user(s): ${SELECTED_USERS[*]}"
+ok "Selected ${#SELECTED_USERS[@]} user(s): ${SELECTED_USERS[@]}"
 
 section "Step 3: Backup (one multi-user task)"
 info "Creating backup directory: $BACKUP_DIR"
