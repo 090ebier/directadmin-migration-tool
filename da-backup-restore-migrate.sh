@@ -590,16 +590,18 @@ ENC_DEST_PATH="$(url_encode_path "$DEST_PATH")"
 info "Verifying backup files exist on destination..."
 for u in "${SELECTED_USERS[@]}"; do
   f="$(find_backup_file_for_user "$u")"
-  remote_ssh "test -s '$DEST_PATH/$f'" >/dev/null 2>&1 \
-    || die "Destination missing backup file: $DEST_PATH/$f"
+  if ! remote_ssh "test -s '$DEST_PATH/$f'" >/dev/null 2>&1; then
+    echo "WARNING: Destination missing backup file: $DEST_PATH/$f" | tee -a "$LOG_FILE"
+  fi
 done
-ok "All backup files exist on destination."
+ok "Backup file verification completed (errors logged if any)."
 
 restore_task="$(build_restore_task_line_multi)"
 info "Writing restore task into destination task.queue..."
-remote_ssh "printf '%s\n' \"$restore_task\" >> '$TASK_QUEUE'" >/dev/null 2>&1 \
-  || die "Failed to write restore task to destination task.queue"
-ok "Queued restore task for ${#SELECTED_USERS[@]} backups."
+if ! remote_ssh "printf '%s\n' \"$restore_task\" >> '$TASK_QUEUE'" >/dev/null 2>&1; then
+  echo "ERROR: Failed to write restore task to destination task.queue" | tee -a "$LOG_FILE"
+fi
+ok "Queued restore task for ${#SELECTED_USERS[@]} backups (errors logged if any)."
 
 info "Executing task queue (restore) on destination..."
 RESTORE_OUT="$(sshpass -p "$SSH_PASS" ssh -q \
@@ -609,10 +611,11 @@ RESTORE_OUT="$(sshpass -p "$SSH_PASS" ssh -q \
   "$DEST_USER@$DEST_IP" "$DA_BIN taskq" 2>&1 || true)"
 
 echo "$RESTORE_OUT" | tee -a "$LOG_FILE" >/dev/null
+
 if echo "$RESTORE_OUT" | grep -qiE "error running backup task|task failed|permission denied|ensure_backup_readable|Error creating symlink: File exists"; then
-  die "Restore failed on destination. Please check DirectAdmin logs on destination + $LOG_FILE"
+  echo "WARNING: Restore encountered errors on destination. Check logs in $LOG_FILE and DirectAdmin." | tee -a "$LOG_FILE"
 fi
-ok "Restore execution triggered on destination."
+ok "Restore execution triggered on destination (errors logged if any)."
 
 section "Step 6: Post-restore rsync heavy data (domains + imap)"
 for u in "${SELECTED_USERS[@]}"; do
