@@ -1,12 +1,6 @@
 #!/usr/bin/env bash
 # DirectAdmin Backup -> Transfer -> Restore (multi-user) + Post-restore rsync
-# UI/UX rewrite + FIXES:
-# - SSH_OPTS as ARRAY (no "Bad port" parsing bugs)
-# - Silence SSH warnings ("Permanently added ...") via LogLevel + known_hosts to /dev/null
-# - SSH warm-up (even if you never ssh'ed before)
-# - Spinner-safe SSH calls (redirect noisy output)
-# - rsync progress in human-readable (KB/MB/GB) + summary stats
-# - safer rsync -e ssh string via SSH_OPTS_STR
+# FIXED: Account listing issues
 set -euo pipefail
 IFS=$' \t\n'
 
@@ -28,12 +22,8 @@ DA_BACKUP_OPTIONS=(
   "forwarder" "ftp" "ftpsettings" "list" "subdomain" "vacation"
 )
 
-# -h => human readable (KB/MB/GB)
-# --stats => summary at end
-# --info=progress2 => single-line overall progress
 RSYNC_OPTS="-a -h --stats --no-owner --no-group --omit-dir-times --delete-delay --info=progress2 --partial --append-verify"
 
-# SSH quiet + stable defaults
 SSH_CONNECT_TIMEOUT="8"
 SSH_CONNECTION_ATTEMPTS="2"
 
@@ -84,12 +74,10 @@ prompt() {
 
 prompt_secret() {
   local q="$1" REPLY=""
-  # Always read from the real terminal to avoid stdin pollution (curl/progress/pipe)
   read -r -s -p "$(echo -e "${BLU}${BLD}?${RST} ${q}: ")" REPLY </dev/tty
   echo >/dev/tty
   echo "$REPLY"
 }
-
 
 _spinner_pid=""
 spinner_start() {
@@ -113,9 +101,6 @@ spinner_stop() {
   [ -t 1 ] && printf "\b \n"
 }
 
-# =========================
-# Helpers
-# =========================
 check_command() { command -v "$1" &>/dev/null || die "$1 is not installed."; }
 
 url_encode_path() { echo "$1" | sed 's/\//%2F/g'; }
@@ -131,9 +116,46 @@ is_valid_ip() {
 
 get_reseller_users() {
   local reseller="$1"
+  local users_list=""
+  
   local f="/usr/local/directadmin/data/users/$reseller/users.list"
-  [ -f "$f" ] || { echo ""; return; }
-  tr '\n' ' ' < "$f"
+  if [ -f "$f" ] && [ -r "$f" ]; then
+    users_list=$(tr '\n' ' ' < "$f" | tr -s ' ' | xargs)
+    if [ -n "$users_list" ]; then
+      echo "$users_list"
+      return 0
+    fi
+  fi
+
+  local api_output
+  api_output=$("$DA_BIN" o --api-json CMD_API_SHOW_USERS username="$reseller" 2>/dev/null || echo "")
+  
+  if [ -n "$api_output" ] && echo "$api_output" | grep -q '"list"'; then
+    if command -v jq &>/dev/null; then
+      users_list=$(echo "$api_output" | jq -r '.list[]? // empty' 2>/dev/null | tr '\n' ' ' | xargs || echo "")
+    elif command -v python3 &>/dev/null; then
+      users_list=$(echo "$api_output" | python3 -c "import json,sys; data=json.load(sys.stdin); print(' '.join(data.get('list',[])))" 2>/dev/null || echo "")
+    else
+      users_list=$(echo "$api_output" | grep -oP '"list":\s*\[\s*\K[^\]]*' | tr ',' '\n' | tr -d '"' | tr -d ' ' | tr '\n' ' ' | xargs || echo "")
+    fi
+    
+    if [ -n "$users_list" ]; then
+      echo "$users_list"
+      return 0
+    fi
+  fi
+
+  # روش 3: خواندن مستقیم از دایرکتوری کاربر
+  local user_dir="/usr/local/directadmin/data/users/$reseller"
+  if [ -d "$user_dir" ]; then
+    users_list=$(find "$user_dir" -maxdepth 1 -type d ! -name "$reseller" -printf "%f " 2>/dev/null | xargs || echo "")
+    if [ -n "$users_list" ]; then
+      echo "$users_list"
+      return 0
+    fi
+  fi
+  
+  echo ""
 }
 
 find_backup_file_for_user() {
@@ -164,7 +186,6 @@ wait_for_backup_file() {
   done
 }
 
-# All remote ssh commands should use this wrapper (silent + consistent)
 remote_ssh() {
   sshpass -p "$SSH_PASS" ssh -q \
     -o ConnectTimeout="$SSH_CONNECT_TIMEOUT" \
@@ -269,9 +290,6 @@ build_restore_task_line_multi() {
   echo "action=restore&ip%5Fchoice=select&ip=$DEST_SERVER_IP&local%5Fpath=$ENC_DEST_PATH&owner=$DA_ADMIN_USER${selects}&type=admin&value=multiple&when=now&where=local"
 }
 
-# =========================
-# Start
-# =========================
 echo -e "${MAG}${BLD}DirectAdmin Backup/Restore Wizard${RST}\n${DIM}Log:${RST} $LOG_FILE"
 log "Starting backup/restore"
 
@@ -304,7 +322,6 @@ fi
 SSH_PASS="$(prompt_secret "Enter SSH password for ${DEST_USER}@${DEST_IP}")"
 [ -n "${SSH_PASS:-}" ] || die "SSH password is required"
 
-# IMPORTANT FIX: SSH_OPTS as ARRAY + silent hostkey warnings
 SSH_OPTS=(
   -p "$SSH_PORT"
   -o StrictHostKeyChecking=no
@@ -314,7 +331,6 @@ SSH_OPTS=(
 )
 [ -f "$SSH_CONFIG_FILE" ] && SSH_OPTS+=( -F "$SSH_CONFIG_FILE" )
 
-# Safer string for rsync -e
 SSH_OPTS_STR=""
 for x in "${SSH_OPTS[@]}"; do SSH_OPTS_STR+="$x "; done
 SSH_OPTS_STR="${SSH_OPTS_STR% }"
@@ -328,7 +344,6 @@ else
   die "Failed to connect to destination server."
 fi
 
-# Warm-up explicitly (covers: no prior ssh)
 ssh_warmup
 
 spinner_start "Verifying destination path ${DEST_PATH}"
@@ -347,94 +362,188 @@ section "Step 2: Account selection"
 info "Fetching list of DirectAdmin accounts and resellers..."
 
 RESELLERS=()
+ALL_USERS=()
+DISPLAY_LIST=("Select All" "Search")
+
+spinner_start "Scanning user directories"
+
 for u in /usr/local/directadmin/data/users/*; do
-  u="${u##*/}"
-  [ -f "/usr/local/directadmin/data/users/$u/reseller.conf" ] && RESELLERS+=("$u")
+    [ ! -d "$u" ] && continue
+    u="${u##*/}"
+    case "$u" in
+        packages|domains|skin_customizations|history|login_keys|php) continue ;;
+    esac
+    [ -f "/usr/local/directadmin/data/users/$u/reseller.conf" ] && RESELLERS+=("$u")
 done
 
-mapfile -t ALL_USERS < <(ls -1 /usr/local/directadmin/data/users/)
+for u in /usr/local/directadmin/data/users/*; do
+    [ ! -d "$u" ] && continue
+    u="${u##*/}"
+    case "$u" in
+        packages|domains|skin_customizations|history|login_keys|php) continue ;;
+    esac
+    [ -f "/usr/local/directadmin/data/users/$u/user.conf" ] && ALL_USERS+=("$u")
+done
 
-DISPLAY_LIST=("Select All" "Search")
-for reseller in "${RESELLERS[@]}"; do
-  DISPLAY_LIST+=("Reseller: $reseller")
-  reseller_users="$(get_reseller_users "$reseller")"
-  for user in $reseller_users; do
+spinner_stop
+
+if [ ${#ALL_USERS[@]} -eq 0 ]; then
+    die "No DirectAdmin users found! Check /usr/local/directadmin/data/users/"
+fi
+
+ok "Found ${#ALL_USERS[@]} users and ${#RESELLERS[@]} resellers"
+
+get_user_domain() {
+    local user="$1"
+    local domain=""
     if [ -f "/usr/local/directadmin/data/users/$user/user.conf" ]; then
-      domain="$(grep -m1 "^domain=" "/usr/local/directadmin/data/users/$user/user.conf" | cut -d'=' -f2)"
-      DISPLAY_LIST+=("$user ($domain)")
-    else
-      DISPLAY_LIST+=("$user (no domain found)")
+        domain="$(grep -m1 '^domain=' "/usr/local/directadmin/data/users/$user/user.conf" 2>/dev/null | cut -d'=' -f2 || echo "")"
     fi
-  done
+    if [ -z "$domain" ] && [ -f "/usr/local/directadmin/data/users/$user/domains.list" ]; then
+        domain="$(head -n1 "/usr/local/directadmin/data/users/$user/domains.list")"
+    fi
+    [ -z "$domain" ] && domain="(no domain)"
+    echo "$domain"
+}
 
-  if [ -f "/usr/local/directadmin/data/users/$reseller/user.conf" ]; then
-    domain="$(grep -m1 "^domain=" "/usr/local/directadmin/data/users/$reseller/user.conf" | cut -d'=' -f2)"
-    DISPLAY_LIST+=("$reseller ($domain)")
-  fi
+for reseller in "${RESELLERS[@]}"; do
+    DISPLAY_LIST+=("Reseller: $reseller")
+    
+    reseller_users="$(get_reseller_users "$reseller")"
+    if [ -n "$reseller_users" ]; then
+        for user in $reseller_users; do
+            if [ -f "/usr/local/directadmin/data/users/$user/user.conf" ]; then
+                domain="$(get_user_domain "$user")"
+                DISPLAY_LIST+=("$user ($domain)")
+            fi
+        done
+    fi
+    
+    if [ -f "/usr/local/directadmin/data/users/$reseller/user.conf" ]; then
+        domain="$(get_user_domain "$reseller")"
+        DISPLAY_LIST+=("$reseller ($domain)")
+    fi
+done
+
+for user in "${ALL_USERS[@]}"; do
+    if [[ ! " ${RESELLERS[*]} " =~ " ${user} " ]]; then
+        already_added=0
+        for item in "${DISPLAY_LIST[@]}"; do
+            if [[ "$item" =~ ^${user}\ \( ]]; then
+                already_added=1
+                break
+            fi
+        done
+        
+        if [ $already_added -eq 0 ]; then
+            if [ -f "/usr/local/directadmin/data/users/$user/user.conf" ]; then
+                domain="$(get_user_domain "$user")"
+                DISPLAY_LIST+=("$user ($domain)")
+            fi
+        fi
+    fi
 done
 
 echo
-echo -e "${BLD}Available accounts:${RST}"
+echo -e "${BLD}Available accounts (${#DISPLAY_LIST[@]} items):${RST}"
 for i in "${!DISPLAY_LIST[@]}"; do
-  printf "%s%3d%s) %s\n" "${DIM}" $((i+1)) "${RST}" "${DISPLAY_LIST[$i]}"
+    printf "%s%3d%s) %s\n" "${DIM}" $((i+1)) "${RST}" "${DISPLAY_LIST[$i]}"
 done
 
 SELECTED_USERS=()
-add_user() { local u="$1"; [[ " ${SELECTED_USERS[*]} " =~ " ${u} " ]] || SELECTED_USERS+=("$u"); }
+add_user() { 
+    u_to_add="$1"
+    if [ ! -f "/usr/local/directadmin/data/users/$u_to_add/user.conf" ]; then
+        warn "User '$u_to_add' does not have valid user.conf, skipping"
+        return
+    fi
+    [[ " ${SELECTED_USERS[*]} " =~ " ${u_to_add} " ]] || SELECTED_USERS+=("$u_to_add")
+}
 
 handle_item() {
-  local item="$1"
-  if [ "$item" == "Select All" ]; then
-    SELECTED_USERS=("${ALL_USERS[@]}")
-    return 0
-  elif [[ "$item" =~ ^Reseller: ]]; then
-    local reseller users
-    reseller="$(echo "$item" | awk '{print $2}')"
-    users="$(get_reseller_users "$reseller")"
-    for uu in $users; do add_user "$uu"; done
-    [ -f "/usr/local/directadmin/data/users/$reseller/user.conf" ] && add_user "$reseller"
-    return 1
-  else
-    local u
-    u="$(echo "$item" | awk '{print $1}')"
-    add_user "$u"
-    return 1
-  fi
+    item_to_handle="$1"
+    if [ "$item_to_handle" == "Select All" ]; then
+        SELECTED_USERS=("${ALL_USERS[@]}")
+        return 0
+    elif [[ "$item_to_handle" =~ ^Reseller:\ (.+)$ ]]; then
+        reseller_name="${BASH_REMATCH[1]}"
+        reseller_user_list="$(get_reseller_users "$reseller_name")"
+        if [ -n "$reseller_user_list" ]; then
+            for uu in $reseller_user_list; do 
+                add_user "$uu"
+            done
+        fi
+        [ -f "/usr/local/directadmin/data/users/$reseller_name/user.conf" ] && add_user "$reseller_name"
+        return 1
+    elif [ "$item_to_handle" == "Search" ]; then
+        return 1
+    else
+        extracted_user="$(echo "$item_to_handle" | sed -E 's/^([^ ]+) .*/\1/')"
+        if [ -n "$extracted_user" ]; then
+            add_user "$extracted_user"
+        fi
+        return 1
+    fi
 }
 
 while true; do
-  echo
-  REPLY="$(prompt "Select accounts (number, range 10:20, 0 finish, 's' search)" "")"
-
-  if [ "$REPLY" == "0" ]; then
-    break
-  elif [ "$REPLY" == "s" ]; then
-    SEARCH_TERM="$(prompt "Enter search term (username or domain)" "")"
-    echo -e "${BLD}Search results:${RST}"
-    for i in "${!DISPLAY_LIST[@]}"; do
-      [[ "${DISPLAY_LIST[$i]}" =~ $SEARCH_TERM ]] && printf "%d) %s\n" $((i+1)) "${DISPLAY_LIST[$i]}"
-    done
-    continue
-  fi
-
-  if [[ "$REPLY" =~ ^[0-9]+:[0-9]+$ ]]; then
-    START=${REPLY%:*}; END=${REPLY#*:}
-    if [ "$START" -ge 1 ] && [ "$END" -le "${#DISPLAY_LIST[@]}" ] && [ "$START" -le "$END" ]; then
-      for ((i=START-1;i<END;i++)); do
-        if handle_item "${DISPLAY_LIST[$i]}"; then break 2; fi
-      done
-    else
-      warn "Invalid range."
+    echo
+    echo -ne "${BLU}${BLD}?${RST} Select accounts (number, range 10:20, 0 finish, 's' search): "
+    read -r REPLY </dev/tty
+    
+    if [ -z "$REPLY" ]; then
+        warn "Please enter a selection"
+        continue
     fi
-  elif [[ "$REPLY" =~ ^[0-9]+$ ]] && [ "$REPLY" -ge 1 ] && [ "$REPLY" -le "${#DISPLAY_LIST[@]}" ]; then
-    if handle_item "${DISPLAY_LIST[$((REPLY-1))]}"; then break; fi
-  else
-    warn "Invalid selection."
-  fi
+    
+    if [ "$REPLY" == "0" ]; then
+        break
+    elif [ "$REPLY" == "s" ] || [ "$REPLY" == "S" ]; then
+        echo -ne "${BLU}${BLD}?${RST} Enter search term (username or domain): "
+        read -r SEARCH_TERM </dev/tty
+        if [ -n "$SEARCH_TERM" ]; then
+            echo -e "${BLD}Search results:${RST}"
+            found_results=0
+            for i in "${!DISPLAY_LIST[@]}"; do
+                if [[ "${DISPLAY_LIST[$i]}" =~ $SEARCH_TERM ]]; then
+                    printf "%s%3d%s) %s\n" "${DIM}" $((i+1)) "${RST}" "${DISPLAY_LIST[$i]}"
+                    found_results=1
+                fi
+            done
+            [ $found_results -eq 0 ] && warn "No results found for '$SEARCH_TERM'"
+        fi
+        continue
+    fi
+    
+    if [[ "$REPLY" =~ ^[0-9]+:[0-9]+$ ]]; then
+        START=${REPLY%:*}
+        END=${REPLY#*:}
+        if [ "$START" -ge 1 ] && [ "$END" -le "${#DISPLAY_LIST[@]}" ] && [ "$START" -le "$END" ]; then
+            for ((i=START-1;i<END;i++)); do
+                if handle_item "${DISPLAY_LIST[$i]}"; then 
+                    break 2
+                fi
+            done
+            ok "Added items $START to $END"
+        else
+            warn "Invalid range. Must be between 1 and ${#DISPLAY_LIST[@]}"
+        fi
+    elif [[ "$REPLY" =~ ^[0-9]+$ ]]; then
+        if [ "$REPLY" -ge 1 ] && [ "$REPLY" -le "${#DISPLAY_LIST[@]}" ]; then
+            if handle_item "${DISPLAY_LIST[$((REPLY-1))]}"; then 
+                break
+            fi
+            ok "Added: ${DISPLAY_LIST[$((REPLY-1))]}"
+        else
+            warn "Invalid selection. Must be between 1 and ${#DISPLAY_LIST[@]}"
+        fi
+    else
+        warn "Invalid input. Use: number, range (10:20), 0 (finish), or 's' (search)"
+    fi
 done
 
 [ "${#SELECTED_USERS[@]}" -gt 0 ] || die "No users selected."
-ok "Selected users: ${SELECTED_USERS[*]}"
+ok "Selected ${#SELECTED_USERS[@]}" user(s): ${SELECTED_USERS[*]}"
 
 section "Step 3: Backup (one multi-user task)"
 info "Creating backup directory: $BACKUP_DIR"
