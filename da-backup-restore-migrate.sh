@@ -146,11 +146,11 @@ is_valid_ip() {
 prompt() {
   local q="$1" d="${2:-}" reply=""
   if [ -n "$d" ]; then
-    read -r -p "$(echo -e "${BLU}${BLD}?${RST} ${q} ${DIM}[default: ${d}]${RST}: ")" reply </dev/tty \
+    read -r -e -p "$(echo -e "${BLU}${BLD}?${RST} ${q} ${DIM}[default: ${d}]${RST}: ")" reply </dev/tty \
       || die "Input aborted (EOF)"
     echo "${reply:-$d}"
   else
-    read -r -p "$(echo -e "${BLU}${BLD}?${RST} ${q}: ")" reply </dev/tty \
+    read -r -e -p "$(echo -e "${BLU}${BLD}?${RST} ${q}: ")" reply </dev/tty \
       || die "Input aborted (EOF)"
     echo "$reply"
   fi
@@ -158,7 +158,7 @@ prompt() {
 
 prompt_secret() {
   local q="$1" reply=""
-  read -r -s -p "$(echo -e "${BLU}${BLD}?${RST} ${q}: ")" reply </dev/tty \
+  read -r -e -s -p "$(echo -e "${BLU}${BLD}?${RST} ${q}: ")" reply </dev/tty \
     || die "Input aborted (EOF)"
   echo >/dev/tty
   echo "$reply"
