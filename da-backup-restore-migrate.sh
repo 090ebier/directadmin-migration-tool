@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # DirectAdmin Backup -> Transfer -> Restore (multi-user) + Post-restore rsync
 # FIXED: tput under set -e, interactive input stability, reseller listing fallback
+# FIXED: SELECTED_USERS nounset/unbound under set -u (CentOS + bash <(curl ...))
 set -euo pipefail
 IFS=$' \t\n'
 
@@ -414,6 +415,9 @@ RESELLERS=()
 ALL_USERS=()
 DISPLAY_LIST=("Select All" "Search")
 
+# FIX: define array safely for set -u
+declare -ag SELECTED_USERS=()
+
 spinner_start "Scanning user directories"
 
 for u in /usr/local/directadmin/data/users/*; do
@@ -480,12 +484,19 @@ for i in "${!DISPLAY_LIST[@]}"; do
   printf "%s%3d%s) %s\n" "${DIM}" $((i+1)) "${RST}" "${DISPLAY_LIST[$i]}"
 done
 
+# (keep) reset selection
 SELECTED_USERS=()
 
 add_user() {
   local u_to_add="$1"
   [ -f "/usr/local/directadmin/data/users/$u_to_add/user.conf" ] || { warn "User '$u_to_add' invalid, skip"; return 0; }
-  [[ " ${SELECTED_USERS[*]} " =~ " ${u_to_add} " ]] || SELECTED_USERS+=("$u_to_add")
+
+  # FIX: nounset-safe membership check
+  case " ${SELECTED_USERS[*]-} " in
+    *" ${u_to_add} "*) : ;;
+    *) SELECTED_USERS+=("$u_to_add") ;;
+  esac
+
   return 0
 }
 
@@ -568,7 +579,8 @@ while true; do
 done
 
 [ "${#SELECTED_USERS[@]}" -gt 0 ] || die "No users selected."
-ok "Selected ${#SELECTED_USERS[@]} user(s): ${SELECTED_USERS[*]}"
+# FIX: nounset-safe printing
+ok "Selected ${#SELECTED_USERS[@]} user(s): ${SELECTED_USERS[*]-}"
 
 section "Step 3: Backup (one multi-user task)"
 info "Creating backup directory: $BACKUP_DIR"
