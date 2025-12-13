@@ -526,7 +526,7 @@ handle_item() {
 while true; do
   echo
   echo -ne "${BLU}${BLD}?${RST} Select accounts (number, range 10:20, 0 finish, 's' search): "
-  if ! read -r REPLY </dev/tty; then
+  if ! read -r -e REPLY </dev/tty; then
     warn "Input interrupted (EOF)."
     continue
   fi
@@ -537,7 +537,7 @@ while true; do
     break
   elif [ "$REPLY" == "s" ] || [ "$REPLY" == "S" ]; then
     echo -ne "${BLU}${BLD}?${RST} Enter search term (username or domain): "
-    if ! read -r SEARCH_TERM </dev/tty; then
+    if ! read -r -e SEARCH_TERM </dev/tty; then
       warn "Search cancelled (EOF)."
       continue
     fi
