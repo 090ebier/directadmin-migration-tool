@@ -361,7 +361,7 @@ clear
 echo
 echo -e "${MAG}${BLD}╔═══════════════════════════════════════════════════════════════╗${RST}"
 echo -e "${MAG}${BLD}║                                                               ║${RST}"
-echo -e "${MAG}${BLD}║          ${WHT}DirectAdmin Backup & Restore Wizard${MAG}             ║${RST}"
+echo -e "${MAG}${BLD}║          ${WHT}DirectAdmin Backup & Restore Wizard${MAG}                  ║${RST}"
 echo -e "${MAG}${BLD}║                                                               ║${RST}"
 echo -e "${MAG}${BLD}╚═══════════════════════════════════════════════════════════════╝${RST}"
 echo
