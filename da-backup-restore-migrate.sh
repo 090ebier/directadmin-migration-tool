@@ -308,21 +308,116 @@ rsync_user_subdir() {
 
 fix_remote_ownership() {
   local u="$1"
-  progress "Fixing ownership on destination for ${BLD}$u${RST} ..."
+  progress "Fixing ownership on destination for ${BLD}$u${RST} using DirectAdmin scripts..."
+  
   remote_ssh "
     set -e
-    if [ -d '/home/$u/domains' ]; then
-      chown -R '$u:$u' '/home/$u/domains'
-    fi
-    if [ -d '/home/$u/imap' ]; then
-      if getent group mail >/dev/null 2>&1; then
-        chown -R '$u:mail' '/home/$u/imap'
-      else
-        chown -R '$u:$u' '/home/$u/imap'
+    DA_PERM_SCRIPT='/usr/local/directadmin/scripts/set_permissions.sh'
+    
+    if [ -x \"\$DA_PERM_SCRIPT\" ]; then
+      # Use DirectAdmin's set_permissions.sh for proper ownership/permissions
+      # set_user_home: fixes ownership for /home/user including domains and mail
+      \"\$DA_PERM_SCRIPT\" set_user_home '$u' 2>&1 || {
+        echo 'Warning: set_user_home failed, applying manual permissions...'
+        
+        # Manual fallback: replicate DirectAdmin's permission structure
+        # Based on set_user_home behavior from DirectAdmin logs
+        
+        # .shadow file
+        if [ -f '/home/$u/.shadow' ]; then
+          chown '$u:mail' '/home/$u/.shadow' 2>&1 || true
+          chmod 640 '/home/$u/.shadow' 2>&1 || true
+        fi
+        
+        # domains directory
+        if [ -d '/home/$u/domains' ]; then
+          chown '$u:$u' '/home/$u/domains' 2>&1 || true
+          chmod 711 '/home/$u/domains' 2>&1 || true
+          
+          # All domain subdirectories
+          for domain_dir in /home/$u/domains/*; do
+            if [ -d \"\$domain_dir\" ]; then
+              chown -R '$u:$u' \"\$domain_dir\" 2>&1 || true
+              chmod 711 \"\$domain_dir\" 2>&1 || true
+            fi
+          done
+        fi
+        
+        # backups directory
+        if [ -d '/home/$u/backups' ]; then
+          chown -R '$u:$u' '/home/$u/backups' 2>&1 || true
+          chmod 700 '/home/$u/backups' 2>&1 || true
+          find '/home/$u/backups' -type f -exec chmod 600 {} \; 2>&1 || true
+        fi
+        
+        # imap directory (recursive with proper permissions)
+        if [ -d '/home/$u/imap' ]; then
+          chown -R '$u:mail' '/home/$u/imap' 2>&1 || true
+          find '/home/$u/imap' -type d -exec chmod 770 {} \; 2>&1 || true
+          find '/home/$u/imap' -type f -exec chmod 660 {} \; 2>&1 || true
+        fi
+        
+        # .trash directory (recursive)
+        if [ -d '/home/$u/.trash' ]; then
+          chown -R '$u:mail' '/home/$u/.trash' 2>&1 || true
+          find '/home/$u/.trash' -type d -exec chmod 770 {} \; 2>&1 || true
+          find '/home/$u/.trash' -type f -exec chmod 660 {} \; 2>&1 || true
+        fi
+        
+        # .spamassassin directory (recursive)
+        if [ -d '/home/$u/.spamassassin' ]; then
+          chown -R '$u:mail' '/home/$u/.spamassassin' 2>&1 || true
+          find '/home/$u/.spamassassin' -type d -exec chmod 771 {} \; 2>&1 || true
+          find '/home/$u/.spamassassin' -type f -exec chmod 660 {} \; 2>&1 || true
+        fi
+      }
+    else
+      echo 'DirectAdmin set_permissions.sh not found, using manual method...'
+      
+      # Same manual fallback when DirectAdmin script doesn't exist
+      if [ -f '/home/$u/.shadow' ]; then
+        chown '$u:mail' '/home/$u/.shadow' 2>&1 || true
+        chmod 640 '/home/$u/.shadow' 2>&1 || true
+      fi
+      
+      if [ -d '/home/$u/domains' ]; then
+        chown '$u:$u' '/home/$u/domains' 2>&1 || true
+        chmod 711 '/home/$u/domains' 2>&1 || true
+        for domain_dir in /home/$u/domains/*; do
+          if [ -d \"\$domain_dir\" ]; then
+            chown -R '$u:$u' \"\$domain_dir\" 2>&1 || true
+            chmod 711 \"\$domain_dir\" 2>&1 || true
+          fi
+        done
+      fi
+      
+      if [ -d '/home/$u/backups' ]; then
+        chown -R '$u:$u' '/home/$u/backups' 2>&1 || true
+        chmod 700 '/home/$u/backups' 2>&1 || true
+        find '/home/$u/backups' -type f -exec chmod 600 {} \; 2>&1 || true
+      fi
+      
+      if [ -d '/home/$u/imap' ]; then
+        chown -R '$u:mail' '/home/$u/imap' 2>&1 || true
+        find '/home/$u/imap' -type d -exec chmod 770 {} \; 2>&1 || true
+        find '/home/$u/imap' -type f -exec chmod 660 {} \; 2>&1 || true
+      fi
+      
+      if [ -d '/home/$u/.trash' ]; then
+        chown -R '$u:mail' '/home/$u/.trash' 2>&1 || true
+        find '/home/$u/.trash' -type d -exec chmod 770 {} \; 2>&1 || true
+        find '/home/$u/.trash' -type f -exec chmod 660 {} \; 2>&1 || true
+      fi
+      
+      if [ -d '/home/$u/.spamassassin' ]; then
+        chown -R '$u:mail' '/home/$u/.spamassassin' 2>&1 || true
+        find '/home/$u/.spamassassin' -type d -exec chmod 771 {} \; 2>&1 || true
+        find '/home/$u/.spamassassin' -type f -exec chmod 660 {} \; 2>&1 || true
       fi
     fi
   " >/dev/null 2>&1 || die "Failed to fix ownership on destination for $u"
-  ok "Ownership fixed for ${BLD}$u${RST}"
+  
+  ok "Ownership and permissions fixed for ${BLD}$u${RST}"
 }
 
 build_backup_task_line_multi() {
