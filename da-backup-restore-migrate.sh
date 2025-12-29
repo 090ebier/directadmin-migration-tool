@@ -21,7 +21,7 @@ DA_BACKUP_OPTIONS=(
   "forwarder" "ftp" "ftpsettings" "list" "subdomain" "vacation"
 )
 
-RSYNC_OPTS="-a -h --stats --no-owner --no-group --omit-dir-times --delete-delay --info=progress2 --partial --append-verify"
+RSYNC_OPTS="-a -h --stats --no-owner --no-group --omit-dir-times --info=progress2 --partial --append-verify"
 SSH_CONNECT_TIMEOUT="8"
 SSH_CONNECTION_ATTEMPTS="2"
 
